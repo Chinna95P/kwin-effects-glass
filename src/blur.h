@@ -21,6 +21,11 @@
 #include <unordered_map>
 #include <Plasma/plasma_version.h>
 
+namespace BetterBlurDxApi {
+    enum class ProviderResult : int;
+    struct MeshProvider;
+}
+
 namespace KWin
 {
 

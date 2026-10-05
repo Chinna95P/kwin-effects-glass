@@ -50,9 +50,14 @@
 #include <QTime>
 #include <QTimer>
 #include <QWindow>
+#include <QVariant>
 #include <algorithm>
 #include <cmath> // for ceil()
 #include <cstdlib>
+
+#ifndef GLASS_X11
+#include "BetterBlurDxApi.h"
+#endif
 
 #include <KConfigGroup>
 #include <KSharedConfig>
@@ -1253,6 +1258,15 @@ void BlurEffect::blur(const RenderTarget &renderTarget, const RenderViewport &vi
         return;
     }
 
+#ifndef GLASS_X11
+    // Check if BetterWobblyWindows is requesting a custom mesh
+    QVariant wobblyRequest = w->data(BetterBlurDxApi::RequestRole);
+    const BetterBlurDxApi::MeshProvider* wobblyProvider = nullptr;
+    BetterBlurDxApi::MeshView wobblyMeshView;
+    BetterBlurDxApi::MeshBuildInput meshInput;
+    bool useWobblyMesh = false;
+#endif
+
     // Maybe reallocate offscreen render targets. Keep in mind that the first one contains
     // original background behind the window, it's not blurred.
     GLenum textureFormat = GL_RGBA8;
@@ -1303,6 +1317,30 @@ void BlurEffect::blur(const RenderTarget &renderTarget, const RenderViewport &vi
     const Region dirtyRegion = viewport.mapFromDeviceCoordinatesContained(deviceRegion) & backgroundRect;
     for (const Rect &dirtyRect : dirtyRegion.rects()) {
         renderInfo.framebuffers[0]->blitFromRenderTarget(renderTarget, viewport, dirtyRect, dirtyRect.translated(-backgroundRect.topLeft()));
+    }
+#endif
+
+#ifndef GLASS_X11
+    if (BetterBlurDxApi::IsRequest(wobblyRequest) && !renderInfo.framebuffers.empty() && renderInfo.framebuffers[1]) {
+        wobblyProvider = BetterBlurDxApi::DecodeProvider(wobblyRequest);
+        if (wobblyProvider && wobblyProvider->BuildMesh) {
+            meshInput.effectWindow = reinterpret_cast<quintptr>(w);
+            meshInput.windowPaintData = reinterpret_cast<quintptr>(&data);
+            meshInput.renderScale = viewport.scale();
+
+            const GLTexture* blurTexture = renderInfo.framebuffers[1]->colorAttachment();
+            if (blurTexture) {
+                meshInput.textureWidth = blurTexture->width();
+                meshInput.textureHeight = blurTexture->height();
+                meshInput.cacheOriginX = scaledBackgroundRect.x();
+                meshInput.cacheOriginY = scaledBackgroundRect.y();
+
+                if (wobblyProvider->BuildMesh(wobblyProvider->context, &meshInput, &wobblyMeshView)) {
+                    useWobblyMesh = true;
+                    w->setData(BetterBlurDxApi::ResultRole, BetterBlurDxApi::EncodeProviderResult(BetterBlurDxApi::ProviderResult::Rendered));
+                }
+            }
+        }
     }
 #endif
 
@@ -1621,6 +1659,71 @@ void BlurEffect::blur(const RenderTarget &renderTarget, const RenderViewport &vi
 
     const float contentTintStrength = tintStrengthForRegion(contentShape.isEmpty() && !frameShape.isEmpty());
     const float frameTintStrength = tintStrengthForRegion(true);
+
+#ifndef GLASS_X11
+    if (useWobblyMesh && wobblyMeshView.vertices && wobblyMeshView.vertexCount > 0) {
+        GLVertexBuffer* wobblyVbo = GLVertexBuffer::streamingBuffer();
+        wobblyVbo->reset();
+        wobblyVbo->setAttribLayout(std::span(GLVertexBuffer::GLVertex2DLayout), sizeof(GLVertex2D));
+
+        if (auto result = wobblyVbo->map<GLVertex2D>(wobblyMeshView.vertexCount)) {
+            auto map = *result;
+            for (int i = 0; i < wobblyMeshView.vertexCount; ++i) {
+                const auto& src = wobblyMeshView.vertices[i];
+                float localX = src.x - scaledBackgroundRect.x();
+                float localY = src.y - scaledBackgroundRect.y();
+                float texU = src.cacheX / meshInput.textureWidth;
+                float texV = 1.0f - src.cacheY / meshInput.textureHeight;
+                map[i] = GLVertex2D{
+                    .position = QVector2D(localX, localY),
+                    .texcoord = QVector2D(texU, texV)
+                };
+            }
+            wobblyVbo->unmap();
+        }
+
+        wobblyVbo->bindArrays();
+
+        GLTexture *contentBlurredTexture = runBlurPass(splitBlurSettings ? contentBlurSettings : combinedBlurSettings);
+        m_roundedOnscreenPass.shader->setUniform(m_roundedOnscreenPass.tintStrengthLocation, contentTintStrength);
+
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        m_roundedOnscreenPass.shader->setUniform(m_roundedOnscreenPass.offsetLocation, (splitBlurSettings ? contentBlurSettings.offset : combinedBlurSettings.offset) * m_upsampleOffset);
+        glActiveTexture(GL_TEXTURE0);
+        contentBlurredTexture->bind();
+        wobblyVbo->draw(GL_TRIANGLES, 0, wobblyMeshView.vertexCount);
+        glDisable(GL_BLEND);
+
+        if (combinedBlurSettings.noiseStrength > 0 || (splitRenderRegions && m_decorationBlurSettings.noiseStrength > 0)) {
+            glEnable(GL_BLEND);
+            if (wobblyMeshView.opacity < 1.0) {
+                glBlendFunc(GL_CONSTANT_ALPHA, GL_ONE);
+            } else {
+                glBlendFunc(GL_ONE, GL_ONE);
+            }
+
+            if (GLTexture *noiseTexture = ensureNoiseTexture(splitBlurSettings ? contentBlurSettings.noiseStrength : combinedBlurSettings.noiseStrength)) {
+                ShaderManager::instance()->pushShader(m_noisePass.shader.get());
+                QMatrix4x4 noiseProjectionMatrix = viewport.projectionMatrix();
+                noiseProjectionMatrix.translate(scaledBackgroundRect.x(), scaledBackgroundRect.y());
+                m_noisePass.shader->setUniform(m_noisePass.mvpMatrixLocation, noiseProjectionMatrix);
+                m_noisePass.shader->setUniform(m_noisePass.noiseTextureSizeLocation, QVector2D(noiseTexture->width(), noiseTexture->height()));
+
+                glActiveTexture(GL_TEXTURE0);
+                noiseTexture->bind();
+                wobblyVbo->draw(GL_TRIANGLES, 0, wobblyMeshView.vertexCount);
+                ShaderManager::instance()->popShader();
+            }
+            glDisable(GL_BLEND);
+        }
+
+        wobblyVbo->unbindArrays();
+        ShaderManager::instance()->popShader();
+        vbo->unbindArrays();
+        return;
+    }
+#endif
 
     GLTexture *contentBlurredTexture = runBlurPass(splitBlurSettings ? contentBlurSettings : combinedBlurSettings);
     m_roundedOnscreenPass.shader->setUniform(m_roundedOnscreenPass.tintStrengthLocation, contentTintStrength);
