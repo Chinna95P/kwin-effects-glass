@@ -500,6 +500,25 @@ void BlurEffect::updateBlurRegion(EffectWindow *w)
         }
     }
 
+    const bool isTranslucent = w->opacity() < 1.0;
+    const bool isForceBlurred = w->data(WindowForceBlurRole).toBool();
+    if (!content.has_value() && (isTranslucent || isForceBlurred) && !w->isDesktop()) {
+        const auto windowClass = w->window()->resourceClass();
+        const auto resourceName = w->window()->resourceName();
+        auto classes = m_windowClasses;
+        if (!m_whitelist) {
+            classes << QString("xwaylandvideobridge");
+        }
+        const auto matches = classes.contains(windowClass) || classes.contains(resourceName);
+        if ((m_whitelist && matches) || (!m_whitelist && !matches)) {
+#ifdef GLASS_X11
+            content = BlurRegion(w->contentsRect().toAlignedRect());
+#else
+            content = Region(Rect(w->contentsRect().toAlignedRect()));
+#endif
+        }
+    }
+
     if (w->decorationHasAlpha() && decorationSupportsBlurBehind(w)) {
         frame = decorationBlurRegion(w);
     }
@@ -1207,6 +1226,36 @@ void BlurEffect::blur(const RenderTarget &renderTarget, const RenderViewport &vi
     const auto opacity = data.opacity();
 
     // Get the effective shape that will be painted on screen. It's possible that all of it will be clipped.
+
+#ifndef GLASS_X11
+    // Check if BetterWobblyWindows is requesting a custom mesh
+    QVariant wobblyRequest = w->data(BetterBlurDxApi::RequestRole);
+    const BetterBlurDxApi::MeshProvider* wobblyProvider = nullptr;
+    BetterBlurDxApi::MeshView wobblyMeshView;
+    BetterBlurDxApi::MeshBuildInput meshInput;
+    bool useWobblyMesh = false;
+
+    // Apply wobbly mesh opacity multiplier if present
+    float effectiveOpacity = opacity;
+    if (BetterBlurDxApi::IsRequest(wobblyRequest) && !blurInfo.render.empty()) {
+        wobblyProvider = BetterBlurDxApi::DecodeProvider(wobblyRequest);
+        if (wobblyProvider) {
+            meshInput.effectWindow = reinterpret_cast<quintptr>(w);
+            meshInput.windowPaintData = reinterpret_cast<quintptr>(&data);
+            meshInput.renderScale = viewport.scale();
+            meshInput.cacheOriginX = backgroundRect.x();
+            meshInput.cacheOriginY = backgroundRect.y();
+            meshInput.textureWidth = backgroundRect.width();
+            meshInput.textureHeight = backgroundRect.height();
+
+            if (wobblyProvider->BuildMesh(wobblyProvider->context, &meshInput, &wobblyMeshView)) {
+                useWobblyMesh = true;
+                // Multiply window opacity by wobbly mesh opacity
+                effectiveOpacity *= wobblyMeshView.opacity;
+            }
+        }
+    }
+#endif
     auto buildEffectiveShape = [&](const BlurRegion &shape) {
 #ifdef GLASS_X11
         QList<QRectF> effectiveShape;
@@ -1258,14 +1307,6 @@ void BlurEffect::blur(const RenderTarget &renderTarget, const RenderViewport &vi
         return;
     }
 
-#ifndef GLASS_X11
-    // Check if BetterWobblyWindows is requesting a custom mesh
-    QVariant wobblyRequest = w->data(BetterBlurDxApi::RequestRole);
-    const BetterBlurDxApi::MeshProvider* wobblyProvider = nullptr;
-    BetterBlurDxApi::MeshView wobblyMeshView;
-    BetterBlurDxApi::MeshBuildInput meshInput;
-    bool useWobblyMesh = false;
-#endif
 
     // Maybe reallocate offscreen render targets. Keep in mind that the first one contains
     // original background behind the window, it's not blurred.
@@ -1512,7 +1553,11 @@ void BlurEffect::blur(const RenderTarget &renderTarget, const RenderViewport &vi
     };
 
     const QMatrix4x4 &colorMatrix = m_colorMatrix;
+#ifndef GLASS_X11
+    const float modulation = effectiveOpacity * effectiveOpacity;
+#else
     const float modulation = opacity * opacity;
+#endif
 
     w->window()->setBorderRadius(cornerRadius);
 
