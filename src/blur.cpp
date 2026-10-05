@@ -1234,27 +1234,10 @@ void BlurEffect::blur(const RenderTarget &renderTarget, const RenderViewport &vi
     BetterBlurDxApi::MeshView wobblyMeshView;
     BetterBlurDxApi::MeshBuildInput meshInput;
     bool useWobblyMesh = false;
+    float wobblyMeshOpacity = 1.0f;
 
     // Apply wobbly mesh opacity multiplier if present
     float effectiveOpacity = opacity;
-    if (BetterBlurDxApi::IsRequest(wobblyRequest) && !blurInfo.render.empty()) {
-        wobblyProvider = BetterBlurDxApi::DecodeProvider(wobblyRequest);
-        if (wobblyProvider) {
-            meshInput.effectWindow = reinterpret_cast<quintptr>(w);
-            meshInput.windowPaintData = reinterpret_cast<quintptr>(&data);
-            meshInput.renderScale = viewport.scale();
-            meshInput.cacheOriginX = backgroundRect.x();
-            meshInput.cacheOriginY = backgroundRect.y();
-            meshInput.textureWidth = backgroundRect.width();
-            meshInput.textureHeight = backgroundRect.height();
-
-            if (wobblyProvider->BuildMesh(wobblyProvider->context, &meshInput, &wobblyMeshView)) {
-                useWobblyMesh = true;
-                // Multiply window opacity by wobbly mesh opacity
-                effectiveOpacity *= wobblyMeshView.opacity;
-            }
-        }
-    }
 #endif
     auto buildEffectiveShape = [&](const BlurRegion &shape) {
 #ifdef GLASS_X11
@@ -1371,13 +1354,15 @@ void BlurEffect::blur(const RenderTarget &renderTarget, const RenderViewport &vi
 
             const GLTexture* blurTexture = renderInfo.framebuffers[1]->colorAttachment();
             if (blurTexture) {
-                meshInput.textureWidth = blurTexture->width();
-                meshInput.textureHeight = blurTexture->height();
-                meshInput.cacheOriginX = scaledBackgroundRect.x();
-                meshInput.cacheOriginY = scaledBackgroundRect.y();
+                meshInput.textureWidth = backgroundRect.width();
+                meshInput.textureHeight = backgroundRect.height();
+                meshInput.cacheOriginX = backgroundRect.x();
+                meshInput.cacheOriginY = backgroundRect.y();
 
                 if (wobblyProvider->BuildMesh(wobblyProvider->context, &meshInput, &wobblyMeshView)) {
                     useWobblyMesh = true;
+                    wobblyMeshOpacity = std::clamp(wobblyMeshView.opacity, 0.0f, 1.0f);
+                    effectiveOpacity *= wobblyMeshOpacity;
                     w->setData(BetterBlurDxApi::ResultRole, BetterBlurDxApi::EncodeProviderResult(BetterBlurDxApi::ProviderResult::Rendered));
                 }
             }
@@ -1717,8 +1702,8 @@ void BlurEffect::blur(const RenderTarget &renderTarget, const RenderViewport &vi
                 const auto& src = wobblyMeshView.vertices[i];
                 float localX = src.x - scaledBackgroundRect.x();
                 float localY = src.y - scaledBackgroundRect.y();
-                float texU = src.cacheX / meshInput.textureWidth;
-                float texV = 1.0f - src.cacheY / meshInput.textureHeight;
+                float texU = src.cacheX / backgroundRect.width();
+                float texV = 1.0f - src.cacheY / backgroundRect.height();
                 map[i] = GLVertex2D{
                     .position = QVector2D(localX, localY),
                     .texcoord = QVector2D(texU, texV)
@@ -1745,10 +1730,10 @@ void BlurEffect::blur(const RenderTarget &renderTarget, const RenderViewport &vi
 
         if (combinedBlurSettings.noiseStrength > 0 || (splitRenderRegions && m_decorationBlurSettings.noiseStrength > 0)) {
             glEnable(GL_BLEND);
-            if (wobblyMeshView.opacity < 1.0) {
+            if (wobblyMeshOpacity < 1.0) {
 #ifndef GLASS_X11
                 effects->makeOpenGLContextCurrent();
-                glBlendColor(0.0f, 0.0f, 0.0f, wobblyMeshView.opacity);
+                glBlendColor(0.0f, 0.0f, 0.0f, wobblyMeshOpacity);
 #endif
                 glBlendFunc(GL_CONSTANT_ALPHA, GL_ONE);
             } else {
