@@ -1026,8 +1026,21 @@ void BlurEffect::prePaintWindow(EffectWindow *w, WindowPrePaintData &data, std::
 void BlurEffect::prePaintWindow(RenderView *view, EffectWindow *w, WindowPrePaintData &data)
 {
     effects->prePaintWindow(view, w, data);
-    if (!blurRegion(w).isEmpty()) {
+    const BlurRegion region = blurRegion(w);
+    if (!region.isEmpty()) {
         data.setTranslucent();
+#ifndef GLASS_X11
+        if (BetterBlurDxApi::RequireFreshCache(w->data(BetterBlurDxApi::RequestRole))) {
+            const Region blurArea = view->mapToDeviceCoordinatesAligned(
+                QRectF(region.boundingRect()).translated(w->pos())
+            );
+            Region expandedBlur = blurArea;
+            for (const Rect &rect : blurArea.rects()) {
+                expandedBlur += rect.adjusted(-m_expandSize, -m_expandSize, m_expandSize, m_expandSize);
+            }
+            effects->addRepaint(expandedBlur);
+        }
+#endif
     }
 }
 #else
