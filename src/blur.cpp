@@ -1732,6 +1732,9 @@ void BlurEffect::blur(const RenderTarget &renderTarget, const RenderViewport &vi
         GLTexture *contentBlurredTexture = runBlurPass(splitBlurSettings ? contentBlurSettings : combinedBlurSettings);
         m_roundedOnscreenPass.shader->setUniform(m_roundedOnscreenPass.tintStrengthLocation, contentTintStrength);
 
+        // Prevent SDF box clipping from hiding parts of the wobbly mesh (Glass vanish bug fix)
+        m_roundedOnscreenPass.shader->setUniform(m_roundedOnscreenPass.boxLocation, QVector4D(0.0f, 0.0f, 10000.0f, 10000.0f));
+
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
         m_roundedOnscreenPass.shader->setUniform(m_roundedOnscreenPass.offsetLocation, (splitBlurSettings ? contentBlurSettings.offset : combinedBlurSettings.offset) * m_upsampleOffset);
@@ -1743,6 +1746,10 @@ void BlurEffect::blur(const RenderTarget &renderTarget, const RenderViewport &vi
         if (combinedBlurSettings.noiseStrength > 0 || (splitRenderRegions && m_decorationBlurSettings.noiseStrength > 0)) {
             glEnable(GL_BLEND);
             if (wobblyMeshView.opacity < 1.0) {
+#ifndef GLASS_X11
+                effects->makeOpenGLContextCurrent();
+                glBlendColor(0.0f, 0.0f, 0.0f, wobblyMeshView.opacity);
+#endif
                 glBlendFunc(GL_CONSTANT_ALPHA, GL_ONE);
             } else {
                 glBlendFunc(GL_ONE, GL_ONE);
