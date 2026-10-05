@@ -1708,6 +1708,8 @@ void BlurEffect::blur(const RenderTarget &renderTarget, const RenderViewport &vi
 
 #ifndef GLASS_X11
     if (useWobblyMesh && wobblyMeshView.vertices && wobblyMeshView.vertexCount > 0) {
+        GLTexture *contentBlurredTexture = runBlurPass(splitBlurSettings ? contentBlurSettings : combinedBlurSettings);
+
         GLVertexBuffer* wobblyVbo = GLVertexBuffer::streamingBuffer();
         wobblyVbo->reset();
         wobblyVbo->setAttribLayout(std::span(GLVertexBuffer::GLVertex2DLayout), sizeof(GLVertex2D));
@@ -1730,7 +1732,6 @@ void BlurEffect::blur(const RenderTarget &renderTarget, const RenderViewport &vi
 
         wobblyVbo->bindArrays();
 
-        GLTexture *contentBlurredTexture = runBlurPass(splitBlurSettings ? contentBlurSettings : combinedBlurSettings);
         m_roundedOnscreenPass.shader->setUniform(m_roundedOnscreenPass.tintStrengthLocation, contentTintStrength);
 
         // Prevent SDF box clipping from hiding parts of the wobbly mesh (Glass vanish bug fix)
