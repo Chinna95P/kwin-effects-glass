@@ -1338,7 +1338,10 @@ void BlurEffect::blur(const RenderTarget &renderTarget, const RenderViewport &vi
         renderInfo.framebuffers[0]->blitFromRenderTarget(renderTarget, viewport, dirtyRect, dirtyRect.translated(-backgroundRect.topLeft()));
     }
 #else
-    const Region dirtyRegion = viewport.mapFromDeviceCoordinatesContained(deviceRegion) & backgroundRect;
+    const bool forceFreshCache = BetterBlurDxApi::RequireFreshCache(wobblyRequest);
+    const Region dirtyRegion = forceFreshCache
+        ? Region(Rect(backgroundRect))
+        : (viewport.mapFromDeviceCoordinatesContained(deviceRegion) & backgroundRect);
     for (const Rect &dirtyRect : dirtyRegion.rects()) {
         renderInfo.framebuffers[0]->blitFromRenderTarget(renderTarget, viewport, dirtyRect, dirtyRect.translated(-backgroundRect.topLeft()));
     }

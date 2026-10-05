@@ -16,7 +16,7 @@ set(CPACK_PACKAGE_NAME "kwin-glass")
 set(CPACK_PACKAGING_INSTALL_PREFIX "/usr")
 set(CPACK_PACKAGE_FILE_NAME "kwin-glass")
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
-set(CPACK_RPM_PACKAGE_RELEASE "2")
+set(CPACK_RPM_PACKAGE_RELEASE "3")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Fork of the KWin Blur effect for KDE Plasma 6 with additional features (including force blur) and bug fixes")
 include(CPack)
 
